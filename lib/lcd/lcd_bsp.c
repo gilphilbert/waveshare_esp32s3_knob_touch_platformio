@@ -4,6 +4,7 @@
 #include "cst816.h"
 #include "lcd_bl_pwm_bsp.h"
 
+
 static SemaphoreHandle_t lvgl_mux = NULL; //mutex semaphores
 #define LCD_HOST    SPI2_HOST
 
@@ -367,6 +368,7 @@ void example_lvgl_rounder_cb(struct _lv_disp_drv_t *disp_drv, lv_area_t *area) {
   area->x2 = ((x2 >> 1) << 1) + 1;
   area->y2 = ((y2 >> 1) << 1) + 1;
 }
+
 
 static void example_lvgl_touch_cb(lv_indev_drv_t *drv, lv_indev_data_t *data) {
   uint16_t tp_x,tp_y;

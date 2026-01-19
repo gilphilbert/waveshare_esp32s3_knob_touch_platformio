@@ -1,6 +1,6 @@
 #ifndef CST816_H
 #define CST816_H
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 
 #ifdef __cplusplus
 extern "C" {

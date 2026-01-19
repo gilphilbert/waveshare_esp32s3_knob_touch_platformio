@@ -1,4 +1,6 @@
 #include <Arduino.h>
+
+//display
 #include "lcd_bsp.h"
 #include "cst816.h"
 #include "lcd_bl_pwm_bsp.h"
@@ -51,6 +53,21 @@ static void user_encoder_loop_task(void *arg) {
   }
 }
 
+//buzzer
+//#include "SensorDRV2605.hpp"
+//SensorDRV2605 drv;
+//uint8_t effect = 1;
+
+lv_obj_t * label;
+
+static void event_handler(lv_event_t * e) {
+  lv_event_code_t code = lv_event_get_code(e);
+
+  if(code == LV_EVENT_CLICKED) {
+    lv_label_set_text(label, "Clicked!");
+  }
+}
+
 void setup() {
   Serial.begin(115200);
 
@@ -74,9 +91,34 @@ void setup() {
   setDisplayTimeout(10);
 
   lv_obj_t * screen = lv_obj_create(NULL);
-  lv_obj_t * label = lv_label_create(screen);
+  label = lv_label_create(screen);
   lv_label_set_text(label, "Hello PlatfomIO!");
   lv_obj_center(label);
+
+  lv_obj_t * btn1 = lv_btn_create(screen);
+  lv_obj_add_event_cb(btn1, event_handler, LV_EVENT_ALL, NULL);
+  lv_obj_align(btn1, LV_ALIGN_CENTER, 0, -40);
+
+  lv_obj_t * btnlabel = lv_label_create(btn1);
+  lv_label_set_text(btnlabel, "Button");
+  lv_obj_center(btnlabel);
+  
+  lv_scr_load(screen);
+
+  
+
+  //buzzer initialization
+  //if (!drv.begin(Wire, SENSOR_SDA, SENSOR_SCL)) {
+  //  Serial.println("Failed to find DRV2605 - check your wiring!");
+  //  while (1) {
+  //    delay(1000);
+  //  }
+  //}
+  //Serial.println("Init DRV2605 Sensor success!");
+
+  //drv.setWaveform(0, effect);
+  //drv.setWaveform(1, 0);
+  //drv.run();
 }
 
 void loop() {
