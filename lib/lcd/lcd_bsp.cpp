@@ -1,10 +1,13 @@
 #include "lcd_bsp.h"
 #include "esp_lcd_sh8601.h"
 #include "lcd_config.h"
-#include "cst816.h"
 #include "lcd_bl_pwm_bsp.h"
+#include "TouchDrvCSTXXX.hpp"
 
+//touch panel driver
+TouchDrvCSTXXX touch;
 
+//display constants
 static SemaphoreHandle_t lvgl_mux = NULL; //mutex semaphores
 #define LCD_HOST    SPI2_HOST
 
@@ -205,10 +208,8 @@ static const sh8601_lcd_init_cmd_t lcd_init_cmds[] = {
 #endif
 };
 
-unsigned long lastTouch;
-int timeoutDuration;
-
 void lcd_lvgl_Init(void) {
+  //initialize the display
   static lv_disp_draw_buf_t disp_buf; // contains internal graphic buffer(s) called draw buffer(s)
   static lv_disp_drv_t disp_drv;      // contains callback functions
 
@@ -222,7 +223,7 @@ void lcd_lvgl_Init(void) {
   esp_lcd_panel_io_handle_t io_handle = NULL;
 
   const esp_lcd_panel_io_spi_config_t io_config = SH8601_PANEL_IO_QSPI_CONFIG(EXAMPLE_PIN_NUM_LCD_CS,
-                                                                              example_notify_lvgl_flush_ready,
+                                                                              notify_lvgl_flush_ready,
                                                                               &disp_drv);
 
   sh8601_vendor_config_t vendor_config = {
@@ -245,19 +246,28 @@ void lcd_lvgl_Init(void) {
   ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_new_panel_sh8601(io_handle, &panel_config, &panel_handle));
   ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_reset(panel_handle));
   ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_init(panel_handle));
-  //ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_disp_on_off(panel_handle, true));
 
+  //initialize the touch panel
+  touch.setPins(TOUCH_RST, TOUCH_IRQ);
+  touch.setTouchDrvModel(TouchDrv_CST8XX);
+  bool result = touch.begin(Wire, CST816_SLAVE_ADDRESS, SENSOR_SDA, SENSOR_SCL);
+  if (result == false) {
+      while (1) {
+          Serial.println("Failed to initialize CST series touch, please check the connection...");
+          delay(1000);
+      }
+  }
+
+  //initialize LVGL
   lv_init();
-  lv_color_t *buf1 = heap_caps_malloc(EXAMPLE_LCD_H_RES * EXAMPLE_LVGL_BUF_HEIGHT * sizeof(lv_color_t), MALLOC_CAP_DMA);
-  assert(buf1);
-  lv_color_t *buf2 = heap_caps_malloc(EXAMPLE_LCD_H_RES * EXAMPLE_LVGL_BUF_HEIGHT * sizeof(lv_color_t), MALLOC_CAP_DMA);
-  assert(buf2);
-  lv_disp_draw_buf_init(&disp_buf, buf1, buf2, EXAMPLE_LCD_H_RES * EXAMPLE_LVGL_BUF_HEIGHT);
+  static lv_color_t buf1[EXAMPLE_LCD_H_RES * 10];
+  static lv_color_t buf2[EXAMPLE_LCD_H_RES * 10];
+  lv_disp_draw_buf_init(&disp_buf, buf1, buf2, EXAMPLE_LCD_H_RES * 10);
   lv_disp_drv_init(&disp_drv);
   disp_drv.hor_res = EXAMPLE_LCD_H_RES;
   disp_drv.ver_res = EXAMPLE_LCD_V_RES;
-  disp_drv.flush_cb = example_lvgl_flush_cb;
-  disp_drv.rounder_cb = example_lvgl_rounder_cb;
+  disp_drv.flush_cb = lvgl_flush_cb;
+  disp_drv.rounder_cb = lvgl_rounder_cb;
   disp_drv.draw_buf = &disp_buf;
   disp_drv.user_data = panel_handle;
   lv_disp_t *disp = lv_disp_drv_register(&disp_drv);
@@ -266,11 +276,11 @@ void lcd_lvgl_Init(void) {
   lv_indev_drv_init(&indev_drv);
   indev_drv.type = LV_INDEV_TYPE_POINTER;
   indev_drv.disp = disp;
-  indev_drv.read_cb = example_lvgl_touch_cb;
+  indev_drv.read_cb = lvgl_touch_cb;
   lv_indev_drv_register(&indev_drv);
 
   const esp_timer_create_args_t lvgl_tick_timer_args = {
-    .callback = &example_increase_lvgl_tick,
+    .callback = &lvgl_tick,
     .name = "lvgl_tick"
   };
   esp_timer_handle_t lvgl_tick_timer = NULL;
@@ -279,40 +289,33 @@ void lcd_lvgl_Init(void) {
 
   lvgl_mux = xSemaphoreCreateMutex(); //mutex semaphores
   assert(lvgl_mux);
-  xTaskCreate(example_lvgl_port_task, "LVGL", EXAMPLE_LVGL_TASK_STACK_SIZE, NULL, EXAMPLE_LVGL_TASK_PRIORITY, NULL);
-  if (example_lvgl_lock(-1))  {   
+  xTaskCreate(lvgl_port_task, "LVGL", EXAMPLE_LVGL_TASK_STACK_SIZE, NULL, EXAMPLE_LVGL_TASK_PRIORITY, NULL);
+  if (lvgl_lock(-1))  {   
     // Release the mutex
-    example_lvgl_unlock();
+    lvgl_unlock();
   }
 
-  lastTouch = 0;
-  timeoutDuration = 0;
 }
 
-void setDisplayTimeout(int timeout_s) {
-  timeoutDuration = timeout_s * 1000;
-  lastTouch = millis();
-}
-
-static bool example_lvgl_lock(int timeout_ms) {
+static bool lvgl_lock(int timeout_ms) {
   assert(lvgl_mux && "bsp_display_start must be called first");
 
   const TickType_t timeout_ticks = (timeout_ms == -1) ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
   return xSemaphoreTake(lvgl_mux, timeout_ticks) == pdTRUE;
 }
 
-static void example_lvgl_unlock(void) {
+static void lvgl_unlock(void) {
   assert(lvgl_mux && "bsp_display_start must be called first");
   xSemaphoreGive(lvgl_mux);
 }
 
-static void example_lvgl_port_task(void *arg) {
+static void lvgl_port_task(void *arg) {
   uint32_t task_delay_ms = EXAMPLE_LVGL_TASK_MAX_DELAY_MS;
   for(;;) {
-    if (example_lvgl_lock(-1)) {
+    if (lvgl_lock(-1)) {
       task_delay_ms = lv_timer_handler();
       
-      example_lvgl_unlock();
+      lvgl_unlock();
     }
     if (task_delay_ms > EXAMPLE_LVGL_TASK_MAX_DELAY_MS) {
       task_delay_ms = EXAMPLE_LVGL_TASK_MAX_DELAY_MS;
@@ -321,30 +324,21 @@ static void example_lvgl_port_task(void *arg) {
       task_delay_ms = EXAMPLE_LVGL_TASK_MIN_DELAY_MS;
     }
 
-    //if the timeout is set, lastTouch is set (display isn't already asleep) and the current time is after lastTouch and the timeout set by the user
-    if (timeoutDuration > 0 && lastTouch > 0 && millis() > lastTouch + timeoutDuration) {
-      //stop this from reoccuring
-      lastTouch = 0;
-      //turn off the display
-      setUpdutySubdivide(LCD_PWM_MODE_0);
-    }
-
-    //vTaskDelay(pdMS_TO_TICKS(task_delay_ms));
-    vTaskDelay(pdMS_TO_TICKS(EXAMPLE_LVGL_TASK_MIN_DELAY_MS));
+    vTaskDelay(pdMS_TO_TICKS(task_delay_ms));
   }
 }
 
-static void example_increase_lvgl_tick(void *arg) {
+static void lvgl_tick(void *arg) {
   lv_tick_inc(EXAMPLE_LVGL_TICK_PERIOD_MS);
 }
 
-static bool example_notify_lvgl_flush_ready(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_io_event_data_t *edata, void *user_ctx) {
+static bool notify_lvgl_flush_ready(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_io_event_data_t *edata, void *user_ctx) {
   lv_disp_drv_t *disp_driver = (lv_disp_drv_t *)user_ctx;
   lv_disp_flush_ready(disp_driver);
   return false;
 }
 
-static void example_lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map) {
+static void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map) {
   esp_lcd_panel_handle_t panel_handle = (esp_lcd_panel_handle_t) drv->user_data;
   const int offsetx1 = area->x1;
   const int offsetx2 = area->x2;
@@ -354,7 +348,7 @@ static void example_lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_
   esp_lcd_panel_draw_bitmap(panel_handle, offsetx1, offsety1, offsetx2 + 1, offsety2 + 1, color_map);
 }
 
-void example_lvgl_rounder_cb(struct _lv_disp_drv_t *disp_drv, lv_area_t *area) {
+void lvgl_rounder_cb(struct _lv_disp_drv_t *disp_drv, lv_area_t *area) {
   uint16_t x1 = area->x1;
   uint16_t x2 = area->x2;
 
@@ -370,9 +364,9 @@ void example_lvgl_rounder_cb(struct _lv_disp_drv_t *disp_drv, lv_area_t *area) {
 }
 
 
-static void example_lvgl_touch_cb(lv_indev_drv_t *drv, lv_indev_data_t *data) {
-  uint16_t tp_x,tp_y;
-  uint8_t win = getTouch(&tp_x,&tp_y);
+static void lvgl_touch_cb(lv_indev_drv_t *drv, lv_indev_data_t *data) {
+  int16_t tp_x,tp_y;
+  uint8_t win = touch.getPoint(&tp_x, &tp_y, touch.getSupportTouchPoint());
   if (win) {
     #ifdef EXAMPLE_Rotate_90
       data->point.x = tp_y;
@@ -386,13 +380,7 @@ static void example_lvgl_touch_cb(lv_indev_drv_t *drv, lv_indev_data_t *data) {
     if(data->point.y > EXAMPLE_LCD_V_RES)
     data->point.y = EXAMPLE_LCD_V_RES;
     data->state = LV_INDEV_STATE_PRESSED;
-    //ESP_LOGE("TP","(%d,%d)",data->point.x,data->point.y);
 
-    if (lastTouch == 0 && timeoutDuration > 0) {
-      setUpdutySubdivide(LCD_PWM_MODE_255);
-    }
-
-    lastTouch = millis();
   } else {
     data->state = LV_INDEV_STATE_RELEASED;
   }

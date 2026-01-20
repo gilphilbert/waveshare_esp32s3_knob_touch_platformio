@@ -2,7 +2,6 @@
 
 //display
 #include "lcd_bsp.h"
-#include "cst816.h"
 #include "lcd_bl_pwm_bsp.h"
 #include "lcd_config.h"
 #include "lvgl.h"
@@ -11,14 +10,16 @@
 #include "bidi_switch_knob.h"
 static const char *TAG = "encoder";
 
-#define EXAMPLE_ENCODER_ECA_PIN    8
-#define EXAMPLE_ENCODER_ECB_PIN    7
-
 #define SET_BIT(reg,bit) (reg |= ((uint32_t)0x01<<bit))
 #define CLEAR_BIT(reg,bit) (reg &= (~((uint32_t)0x01<<bit)))
 #define READ_BIT(reg,bit) (((uint32_t)reg>>bit) & 0x01)
 #define BIT_EVEN_ALL (0x00ffffff)
 
+//haptic
+#include "SensorDRV2605.hpp"
+SensorDRV2605 drv;
+
+//encoder
 EventGroupHandle_t knob_even_ = NULL;
 
 static knob_handle_t s_knob = 0;
@@ -53,11 +54,6 @@ static void user_encoder_loop_task(void *arg) {
   }
 }
 
-//buzzer
-//#include "SensorDRV2605.hpp"
-//SensorDRV2605 drv;
-//uint8_t effect = 1;
-
 lv_obj_t * label;
 
 static void event_handler(lv_event_t * e) {
@@ -70,25 +66,39 @@ static void event_handler(lv_event_t * e) {
 
 void setup() {
   Serial.begin(115200);
+  delay(2000);
 
   //display initialization
-  Touch_Init();
   lcd_lvgl_Init();
   lcd_bl_pwm_bsp_init(LCD_PWM_MODE_255);
 
   //encoder initialization
   knob_even_ = xEventGroupCreate();
   knob_config_t cfg = {
-    .gpio_encoder_a = EXAMPLE_ENCODER_ECA_PIN,
-    .gpio_encoder_b = EXAMPLE_ENCODER_ECB_PIN,
+    .gpio_encoder_a = ENCODER_ECA_PIN,
+    .gpio_encoder_b = ENCODER_ECB_PIN,
   };
   s_knob = iot_knob_create(&cfg);
   iot_knob_register_cb(s_knob, KNOB_LEFT, _knob_left_cb, NULL);
   iot_knob_register_cb(s_knob, KNOB_RIGHT, _knob_right_cb, NULL);
   xTaskCreate(user_encoder_loop_task, "user_encoder_loop_task", 3000, NULL, 2, NULL);
 
-  //optional, sets a screen timeout. The screen will turn off after this many seconds. Touching the screen turns it back on.
-  setDisplayTimeout(10);
+  //configure haptic
+  if (!drv.begin(Wire, SENSOR_SDA, SENSOR_SCL)) {
+    while (1) {
+      Serial.println("Failed to find DRV2605 - check your wiring!");
+      delay(1000);
+    }
+  }
+  Serial.println("Init DRV2605 Sensor success!");
+  
+
+  //haptic test
+  drv.selectLibrary(1);
+  drv.setMode(SensorDRV2605::MODE_INTTRIG);
+
+
+  //lvgl code
 
   lv_obj_t * screen = lv_obj_create(NULL);
   label = lv_label_create(screen);
@@ -104,21 +114,6 @@ void setup() {
   lv_obj_center(btnlabel);
   
   lv_scr_load(screen);
-
-  
-
-  //buzzer initialization
-  //if (!drv.begin(Wire, SENSOR_SDA, SENSOR_SCL)) {
-  //  Serial.println("Failed to find DRV2605 - check your wiring!");
-  //  while (1) {
-  //    delay(1000);
-  //  }
-  //}
-  //Serial.println("Init DRV2605 Sensor success!");
-
-  //drv.setWaveform(0, effect);
-  //drv.setWaveform(1, 0);
-  //drv.run();
 }
 
 void loop() {
@@ -137,5 +132,12 @@ void loop() {
   delay(1000);
   setUpdutySubdivide(LCD_PWM_MODE_0);
   delay(1000);
+
 #endif
+
+//  uint8_t effect = 1;
+//  drv.setWaveform(0, effect);  // play effect
+//  drv.setWaveform(1, 0);       // end waveform
+//  drv.run();
+//  delay(1000);
 }
