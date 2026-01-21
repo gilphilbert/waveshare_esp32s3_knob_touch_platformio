@@ -1,12 +1,15 @@
 #include <Arduino.h>
 
-//display
+/* -------------------- display --------------------*/
 #include "lcd_bsp.h"
 #include "lcd_bl_pwm_bsp.h"
 #include "lcd_config.h"
 #include "lvgl.h"
 
-//encoder
+lv_obj_t * label;
+lv_obj_t * arc;
+
+/* -------------------- encoder --------------------*/
 #include "bidi_switch_knob.h"
 static const char *TAG = "encoder";
 
@@ -15,13 +18,10 @@ static const char *TAG = "encoder";
 #define READ_BIT(reg,bit) (((uint32_t)reg>>bit) & 0x01)
 #define BIT_EVEN_ALL (0x00ffffff)
 
-//haptic
-#include "SensorDRV2605.hpp"
-SensorDRV2605 drv;
-
-//encoder
 EventGroupHandle_t knob_even_ = NULL;
+uint8_t knob_counter;
 
+//these functions are called from the bidi_switch_knob. Read bidi_switch_knob.h for the full API
 static knob_handle_t s_knob = 0;
 static void _knob_left_cb(void *arg, void *data) {
   uint8_t eventBits_ = 0;
@@ -41,32 +41,38 @@ static void user_encoder_loop_task(void *arg) {
     EventBits_t even = xEventGroupWaitBits(knob_even_,BIT_EVEN_ALL,pdTRUE,pdFALSE,pdMS_TO_TICKS(5000));
     if(READ_BIT(even,0)) {
       // rotate counter-clockwise, e.g.
-      //vol--;
-      //if(vol<=0)
-      //vol = 0;
+      if (knob_counter > 0) {
+        knob_counter--;
+        lv_arc_set_value(arc, knob_counter);
+      }
     }
     if(READ_BIT(even,1)) {
       // rotate clockwise, e.g.
-      //vol++;
-      //if(vol>=100)
-      //vol = 100;
+      if (knob_counter < 64) {
+        knob_counter++;
+        lv_arc_set_value(arc, knob_counter);
+      }
     }
   }
 }
 
-lv_obj_t * label;
+/* -------------------- haptic --------------------*/
+#include "SensorDRV2605.hpp"
+SensorDRV2605 drv;
 
+
+/* -------------------- LVGL functions --------------------*/
 static void event_handler(lv_event_t * e) {
   lv_event_code_t code = lv_event_get_code(e);
 
-  if(code == LV_EVENT_CLICKED) {
+  if(code == LV_EVENT_PRESSED) {
     lv_label_set_text(label, "Clicked!");
   }
 }
 
+/* -------------------- setup --------------------*/
 void setup() {
   Serial.begin(115200);
-  delay(2000);
 
   //display initialization
   lcd_lvgl_Init();
@@ -98,9 +104,16 @@ void setup() {
   drv.setMode(SensorDRV2605::MODE_INTTRIG);
 
 
+  knob_counter = 32;
   //lvgl code
-
   lv_obj_t * screen = lv_obj_create(NULL);
+
+  arc = lv_arc_create(screen);
+  lv_arc_set_range(arc, 0, 64);
+  lv_arc_set_value(arc, knob_counter);
+  lv_obj_set_size(arc, 360, 360);
+  lv_obj_center(arc);
+
   label = lv_label_create(screen);
   lv_label_set_text(label, "Hello PlatfomIO!");
   lv_obj_center(label);
@@ -116,6 +129,7 @@ void setup() {
   lv_scr_load(screen);
 }
 
+/* -------------------- loop --------------------*/
 void loop() {
 
 //you can use this to integrate display brightness, perhaps add it into bsp.c as a function to set display brightness
